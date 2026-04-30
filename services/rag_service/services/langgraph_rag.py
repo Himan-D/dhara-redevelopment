@@ -86,8 +86,31 @@ class RAGTools:
         try:
             from pymilvus import connections, Collection
 
-            connections.connect(host="localhost", port="19530")
-            self.milvus_client = Collection("dcpr_knowledge")
+            milvus_host = os.environ.get("MILVUS_HOST", "localhost")
+            milvus_port = os.environ.get("MILVUS_PORT", "19530")
+            milvus_token = os.environ.get("MILVUS_TOKEN", "")
+            milvus_uri = os.environ.get("MILVUS_URI", "")
+            collection_name = os.environ.get(
+                "MILVUS_COLLECTION_RAG",
+                os.environ.get("MILVUS_COLLECTION", "dcpr_knowledge"),
+            )
+
+            if milvus_uri and milvus_token:
+                uri = milvus_uri if milvus_uri.startswith("https://") else f"https://{milvus_uri}"
+                connections.connect(alias="default", uri=uri, token=milvus_token, timeout=15)
+            elif milvus_token:
+                connections.connect(
+                    alias="default",
+                    host=milvus_host,
+                    port=milvus_port,
+                    token=milvus_token,
+                    secure=True,
+                    timeout=15,
+                )
+            else:
+                connections.connect(alias="default", host=milvus_host, port=milvus_port, timeout=15)
+
+            self.milvus_client = Collection(collection_name)
             print("✅ Milvus connected")
         except Exception as e:
             print(f"⚠️  Milvus not available: {e}")
@@ -129,7 +152,11 @@ Return JSON with: intent, topic, entities[]"""
             embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
             query_embedding = embeddings.embed_query(query)
 
-            collection = Collection("dcpr_knowledge")
+            collection_name = os.environ.get(
+                "MILVUS_COLLECTION_RAG",
+                os.environ.get("MILVUS_COLLECTION", "dcpr_knowledge"),
+            )
+            collection = Collection(collection_name)
             collection.load()
 
             results = collection.search(

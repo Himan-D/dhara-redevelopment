@@ -40,7 +40,10 @@ from scripts.semantic_chunker import HybridChunker
 # Constants
 # ---------------------------------------------------------------------------
 
-COLLECTION_NAME = "documents"
+COLLECTION_NAME = os.environ.get(
+    "MILVUS_COLLECTION_RAG",
+    os.environ.get("MILVUS_COLLECTION", "documents"),
+)
 EMBEDDING_DIM = 1536  # OpenAI text-embedding-3-small
 BATCH_SIZE = 50  # Embedding batch size
 EMBEDDING_BATCH_SIZE = 100  # OpenAI API batch limit

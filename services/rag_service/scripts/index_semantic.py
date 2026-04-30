@@ -22,7 +22,10 @@ from langchain_openai import OpenAIEmbeddings
 
 
 DOCS_DIR = Path(__file__).parent.parent / "docs"
-COLLECTION_NAME = "dcpr_knowledge"
+COLLECTION_NAME = os.environ.get(
+    "MILVUS_COLLECTION_RAG",
+    os.environ.get("MILVUS_COLLECTION", "dcpr_knowledge"),
+)
 BATCH_SIZE = 100
 
 
@@ -166,7 +169,7 @@ def main():
 
     # Setup Milvus
     print("\n[1/4] Setting up Milvus...")
-    setup_local_milvus()
+    setup_local_milvus(COLLECTION_NAME)
     collection = get_collection(COLLECTION_NAME)
 
     if collection.num_entities > 0:

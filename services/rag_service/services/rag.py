@@ -15,11 +15,10 @@ import requests
 # LangGraph
 try:
     from langchain_ollama import ChatOllama
-
     LANGGRAPH_AVAILABLE = True
-except:
+except ImportError:
     LANGGRAPH_AVAILABLE = False
-    from langchain_ollama import ChatOllama
+    ChatOllama = None
 
 # Milvus imports
 try:
@@ -608,13 +607,24 @@ class RAGAgent:
         from langchain_openai import OpenAIEmbeddings
 
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        self.llm = ChatOllama(model=model)
+
+        if LANGGRAPH_AVAILABLE and ChatOllama is not None:
+            self.llm = ChatOllama(model=model)
+        else:
+            from langchain_openai import OpenAI
+
+            print("LangChain Ollama not available; using OpenAI fallback.")
+            self.llm = OpenAI(model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
 
         # Use Milvus if available
         if use_milvus and MILVUS_AVAILABLE:
             try:
-                self.vectorstore = MilvusVectorStore(self.embeddings)
-                print("Using Milvus vector store")
+                collection_name = os.environ.get(
+                    "MILVUS_COLLECTION_RAG",
+                    os.environ.get("MILVUS_COLLECTION", "documents"),
+                )
+                self.vectorstore = MilvusVectorStore(self.embeddings, collection_name=collection_name)
+                print(f"Using Milvus vector store on collection '{collection_name}'")
             except Exception as e:
                 print(f"Milvus failed: {e}, using simple store")
                 self.vectorstore = SimpleVectorStore(self.embeddings)

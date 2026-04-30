@@ -16,6 +16,7 @@ MILVUS_PORT = os.environ.get("MILVUS_PORT", "19530")
 MILVUS_URI = os.environ.get("MILVUS_URI", "")
 MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
 COLLECTION_NAME = os.environ.get("MILVUS_COLLECTION", "documents")
+RAG_COLLECTION_NAME = os.environ.get("MILVUS_COLLECTION_RAG", COLLECTION_NAME)
 EMBEDDING_DIM = 1536
 
 

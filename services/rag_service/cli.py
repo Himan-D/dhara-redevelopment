@@ -5,7 +5,13 @@ Combines DCPR 2034 knowledge base with property card workflow
 """
 
 import argparse
+import sys
 from pathlib import Path
+
+# Ensure the repository root is on Python path when running cli.py directly.
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 
 def main():
@@ -144,7 +150,7 @@ Examples:
 def handle_query(args):
     """Query DCPR regulations - using Intelligent RAG Agent"""
     import os
-    from intelligent_rag import IntelligentRAG
+    from services.rag_service.services import IntelligentRAG
     from pathlib import Path
 
     # Load API key from .env file
@@ -183,7 +189,7 @@ def handle_query(args):
 
 def handle_analyze(args):
     """Analyze property and generate reports"""
-    from property_card_workflow import (
+    from services.rag_service.services.property_card_workflow import (
         PropertyCardWorkflow,
         PropertyCard,
         RevenueBreakdown,
@@ -257,7 +263,7 @@ def handle_analyze(args):
 
 def handle_scan(args):
     """Scan property card from file"""
-    from property_card_workflow import PropertyCardWorkflow
+    from services.rag_service.services.property_card_workflow import PropertyCardWorkflow
 
     print(f"Scanning: {args.input}")
     workflow = PropertyCardWorkflow()
@@ -273,7 +279,7 @@ def handle_scan(args):
 
 def handle_compare(args):
     """Compare DCPR schemes"""
-    from property_card_workflow import DCPRCalculator, PropertyCard
+    from services.rag_service.services.property_card_workflow import DCPRCalculator, PropertyCard
 
     print(f"Comparing schemes for {args.area} sq.m plot\n")
 

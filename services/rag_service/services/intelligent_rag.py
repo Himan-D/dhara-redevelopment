@@ -779,7 +779,10 @@ class SessionRAG:
                     connections.connect(
                         alias="default", host=milvus_host, port=milvus_port, timeout=15
                     )
-                coll_name = os.environ.get("MILVUS_COLLECTION", "documents")
+                coll_name = os.environ.get(
+                    "MILVUS_COLLECTION_RAG",
+                    os.environ.get("MILVUS_COLLECTION", "documents"),
+                )
                 vs = Collection(coll_name)
                 vs.load()
                 SessionRAG._vectorstore = vs
@@ -1117,7 +1120,16 @@ IMPORTANT: If the query is about "side margins", "setbacks", "height limits", "F
                 )
             queries.append("Mumbai DCPR 2034 Redevelopment Scheme Eligibility Table")
 
-        return queries[:15]
+        # Keep only unique queries while preserving order
+        unique_queries = []
+        seen = set()
+        for q in queries:
+            q_normalized = str(q).strip()
+            if q_normalized and q_normalized not in seen:
+                unique_queries.append(q_normalized)
+                seen.add(q_normalized)
+
+        return unique_queries[:15]
 
     def _multi_search(
         self, queries: List[str], context: QueryContext, k: int
@@ -1177,6 +1189,22 @@ IMPORTANT: If the query is about "side margins", "setbacks", "height limits", "F
 
         all_results.sort(key=lambda x: x.score, reverse=True)
         return all_results[: k * 2]
+
+    def _extract_applicable_regulations(self, results: List[SearchResult]) -> List[str]:
+        """Detect known DCPR/UDCPR scheme references from local retrievals."""
+        import re
+
+        schemes = set()
+        pattern = re.compile(
+            r"\b(?:30\(A\)|33\(\d+\)(?:\(\w+\))?|33\(\d+\w*\))\b"
+        )
+        for result in results:
+            for match in pattern.findall(result.text or ""):
+                normalized = match.replace("33(7B)", "33(7)(B)").replace(
+                    "33(20B)", "33(20)(B)"
+                )
+                schemes.add(normalized)
+        return sorted(schemes)
 
     def _rerank_results(
         self, question: str, results: List[SearchResult]
@@ -1242,11 +1270,18 @@ IMPORTANT: If the query is about "side margins", "setbacks", "height limits", "F
             f"Detected intent: {context.intent}, Topic: {context.topic}"
         )
 
-        # 2. Parallel Retrieval: RAG + Web Search concurrently
+        # 2. Parallel Retrieval: local RAG retrieval using DCPR documents only
         search_queries = self._expand_queries(context)
-        web_enabled = os.environ.get("ENABLE_WEB_SEARCH", "true").lower() == "true"
+        web_enabled = False
+        if context.needs_market_data and os.environ.get("ENABLE_WEB_SEARCH", "true").lower() == "true":
+            web_enabled = True
 
-        thought_process.append("Executing parallel retrieval (RAG + Web Search)...")
+        if web_enabled:
+            thought_process.append("Executing parallel retrieval (RAG + Web Search)...")
+        else:
+            thought_process.append(
+                "Executing local RAG retrieval using DCPR documents only..."
+            )
 
         # Web search timeout (seconds)
         WEB_SEARCH_TIMEOUT = int(os.environ.get("WEB_SEARCH_TIMEOUT", "5"))
@@ -1286,6 +1321,7 @@ IMPORTANT: If the query is about "side margins", "setbacks", "height limits", "F
                     )
 
         # Enhanced web search for feasibility/market queries
+        # Do not use web search for DCPR-focused RAG answers by default.
         if web_enabled and context.needs_market_data and context.location:
             enhanced_web = self._search_web(
                 f"{context.location} Pune property rates price per sqft 2025 2026 investment commercial IT parks yields"
@@ -1469,18 +1505,24 @@ Return JSON:
                 kwargs["response_format"] = {"type": "json_object"}
             response = self.client.chat.completions.create(**kwargs)
             res = json.loads(response.choices[0].message.content)
-            
-            # HARDCODED FOR TESTING: Force 33(20)(B) as the primary eligible scheme
-            logger.info("HARDCODING eligible scheme to 33(20)(B)")
-            res["eligible_schemes"] = [
-                {
-                    "scheme": "33(20)(B)",
-                    "status": "Eligible",
-                    "reason": "Hardcoded for testing - Cluster Redevelopment Scheme"
-                }
-            ]
-            res["applicable_regulations"] = ["33(20)(B)"]
-            
+
+            # If the model did not return explicit regulations, infer them from retrieved document text.
+            if not res.get("applicable_regulations"):
+                res["applicable_regulations"] = self._extract_applicable_regulations(
+                    local_results
+                )
+
+            if not res.get("eligible_schemes"):
+                inferred_schemes = res.get("applicable_regulations", [])[:3]
+                res["eligible_schemes"] = [
+                    {
+                        "scheme": scheme,
+                        "status": "Potentially Eligible",
+                        "reason": "Detected in local regulation excerpts"
+                    }
+                    for scheme in inferred_schemes
+                ]
+
             return res
         except Exception as e:
             print(f"Synthesis error: {e}")
@@ -1723,28 +1765,23 @@ Example format:
 """
         elif context.needs_market_data or context.intent == "feasibility_analysis":
             # Feasibility/Investment query - prioritize web data, give market specifics
-            prompt = f"""You are a real estate investment advisor for Pune and Mumbai, Maharashtra. Provide a comprehensive feasibility analysis combining regulatory information with current market data.
+            prompt = f"""You are a real estate investment advisor for Pune and Mumbai, Maharashtra. Provide a comprehensive feasibility analysis using only local DCPR document excerpts.
 
 Question: {question}
 Location: {context.location or "Pune"}
-
-WEB SEARCH RESULTS (PRIORITY - include specific prices, rates, consultants):
-{web_context[:3000] if web_context else "No web results"}
 
 REGULATORY DATA (from local documents):
 {local_text if local_text else "No local regulatory data"}
 
 RULES FOR FEASIBILITY QUERIES:
-1. START WITH CURRENT MARKET DATA - include specific property rates, price per sq ft, recent trends
-2. Give investment analysis with specific numbers from web search
-3. Mention specific infrastructure projects (metro, road widening) if found
-4. Name specific developers/consultants if mentioned in web results
-5. THEN give regulatory FSI/permit information from local documents
-6. Use markdown tables for comparing values
-7. Cite sources as [Web 1], [Doc 1], etc.
-8. NEVER give generic placeholder tables - use actual data from search results
-9. If web search has no specific data, clearly state "Current market data not available" rather than making up numbers
-10. End with actionable next steps for the investor
+1. Use only local DCPR documents. Do not use web results or external knowledge.
+2. Give feasibility analysis with regulatory numbers from the local documents
+3. Mention specific infrastructure or scheme guidance from the documents
+4. Then give regulatory FSI/permit information from local documents
+5. Use markdown tables for comparing values
+6. Cite sources as [Doc 1], [Doc 2]
+7. If document data is missing, clearly state "Local DCPR information not available" rather than inventing anything
+8. End with actionable next steps based on DCPR regulations
 """
         else:
             # Standard regulatory query
@@ -1776,7 +1813,7 @@ STYLE - BE LIKE GOOGLE AI SEARCH:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a Pune urban planning expert. Answer like Google AI - direct, specific, with exact numbers from regulations. Never use tables with placeholder values like 'Varies' or 'Available on request'. If you don't have data, say so in one line. Format cleanly with markdown.",
+                        "content": "You are a Pune urban planning expert. Answer using only local DCPR document excerpts. Do not use web search or external knowledge. Cite sources as 'As per [Doc N]'. If you don't have data, say so clearly and do not hallucinate.",
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -1784,9 +1821,11 @@ STYLE - BE LIKE GOOGLE AI SEARCH:
             )
             answer = response.choices[0].message.content.strip()
 
-            # Add sources section if not already present
-            if "Sources:" not in answer and citations:
-                answer += "\n\n**Sources:**\n" + "\n".join(citations)
+            if citations:
+                citation_labels = [f"[Doc {i + 1}]" for i in range(len(citations))]
+                if "Sources:" not in answer:
+                    answer += "\n\n**Sources:**\n" + "\n".join(citations)
+                answer += "\n\nAs per " + ", ".join(citation_labels) + "."
 
             return answer
         except Exception as e:
@@ -1829,41 +1868,35 @@ Parameters: Area={area_str}, Road={road_str}, Base FSI={base_fsi}
 REGULATION EXCERPTS:
 {local_text}
 
-WEB RESULTS:
-{web_context[:2500] if web_context else "None"}
-
 STYLE - BE LIKE GOOGLE AI SEARCH:
-1. Start with direct answer in 1-2 sentences (NO heading)
-2. MUMBAI REDEVELOPMENT: If location is Mumbai, ALWAYS include a 'Scheme Eligibility Table' comparing 33(7)(B), 33(20)(B), 33(9), 30(A), and 33(12)(B).
-3. Flowing paragraphs without section headers
-4. Use tables for data
-5. Include key points naturally in text
-6. Cite sources inline
-7. Quote exact regulation numbers (e.g., "As per Regulation 33(7)(B)...").
-8. NEVER use LaTeX math notation
-9. NO titles like "Direct Answer", "Conclusion", etc.
+1. Use only local DCPR document excerpts. Do not use web results or external knowledge.
+2. Start with direct answer in 1-2 sentences (NO heading)
+3. MUMBAI REDEVELOPMENT: If location is Mumbai, ALWAYS include a 'Scheme Eligibility Table' comparing 33(7)(B), 33(20)(B), 33(9), 30(A), and 33(12)(B).
+4. Flowing paragraphs without section headers
+5. Use tables for data
+6. Include key points naturally in text
+7. Cite sources inline using 'As per [Doc N]'
+8. Quote exact regulation numbers (e.g., "As per Regulation 33(7)(B)...").
+9. NEVER use LaTeX math notation
+10. NO titles like "Direct Answer", "Conclusion", etc.
 """
         elif is_market_analysis:
-            prompt = f"""You are a real estate investment advisor for Pune and Mumbai, Maharashtra. Provide a comprehensive feasibility analysis.
+            prompt = f"""You are a real estate investment advisor for Pune and Mumbai, Maharashtra. Provide a comprehensive feasibility analysis using only local DCPR documents.
 
 Question: {question}
 Location: {context.location or "Pune"}
-
-WEB SEARCH RESULTS (PRIORITY - include specific prices, rates, consultants):
-{web_context[:3000] if web_context else "No web results"}
 
 REGULATORY DATA:
 {local_text if local_text else "No local regulatory data"}
 
 RULES FOR FEASIBILITY QUERIES:
-1. START WITH CURRENT MARKET DATA - include specific property rates, price per sq ft
-2. Give investment analysis with specific numbers from web search
-3. Mention specific infrastructure projects (metro, road widening)
-4. Name specific developers/consultants if mentioned
-5. THEN give regulatory FSI/permit information
-6. Use markdown tables for comparing values
-7. Cite sources as [Web 1], [Doc 1]
-8. If no specific data, state "Current market data not available"
+1. Use only local DCPR documents. Do not use web results or external knowledge.
+2. Give investment analysis with regulatory numbers from the local documents
+3. Mention specific infrastructure or scheme guidance from the documents
+4. Then give regulatory FSI/permit information based on documents
+5. Use markdown tables for comparing values
+6. Cite sources as [Doc 1], [Doc 2]
+7. If no document data is available, state "Local DCPR information not available"
 """
         else:
             # Standard regulatory query
@@ -1896,17 +1929,13 @@ FSI Data: Base={base_fsi}, Max={max_fsi}, Premium={prem_fsi}
 DCPR/UDCPR Regulation Excerpts:
 {local_text}
 
-Web Search Results:
-{web_context[:1000] if web_context else "None"}
-
 RULES:
-1. Start with DIRECT answer - prioritize documents, then use web search
-2. If documents have the answer, cite [Doc X]
-3. If documents don't have it, use web search and cite [Web] instead
+1. Use only local DCPR documents. Do not use web search or external knowledge.
+2. Start with DIRECT answer in 1-2 sentences.
+3. If documents have the answer, cite [Doc X]
 4. NEVER fabricate values not in sources
-5. Use web search as primary source when documents are unclear/irrelevant
-6. Use markdown tables for data
-7. Be direct, no filler
+5. Use markdown tables for data when relevant
+6. Be direct, no filler
 """
         try:
             response = self.client.chat.completions.create(
